@@ -1,0 +1,190 @@
+---
+title: "Final Assignment: Predicting Lifting Quality"
+output: 
+  html_document: 
+    keep_md: yes
+keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(caret)
+library(tibble)
+```
+
+# The problem
+The goal of this project is to predict the manner in which they did the exercise. This is the "classe" variable (A, B, C, D, E) describing how well someone has lifted weights. This report describes the predictive model, how it was validated, and the expected out of sample error, and the assumptions and choices made. The model is then used to predict the classe on a test set of 20 observations.
+
+# The Data
+The data was used was the Weight Lifting Exercises Dataset published by Velloso et al (2013), more information can be found in the paper below and online at http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+The data comprises over 19,000 observations of healthy participants who were asked to perform repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+The classe variable has 5 categories. Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. 
+
+Participants movement was measured using sensors. The project uses these measurements to predict the classe variable. 
+
+## Data download
+Data sources for training and testing sets
+```{r urls, echo=TRUE}
+urltrain <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+urltest <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+```
+
+Training dataset:
+If file not present, download from url
+```{r downloadtrain, echo=TRUE}
+filetrain <- "pml-training.csv"
+if(!file.exists(filetrain)){
+  cat("Downloading training data file...\n")
+  download.file(urltrain,filetrain) 
+}
+```
+
+Testing dataset:
+If file not present, download from url
+```{r downloadtest, echo=TRUE}
+# Test dataset
+filetest <- "pml-testing.csv"
+if(!file.exists(filetest)){
+  cat("\nDownloading testing data file...\n")
+  download.file(urltest,filetest) 
+}
+```
+
+
+## Read the data
+```{r read, echo=TRUE}
+train <- read.csv(filetrain, header=TRUE,na.strings=c("NA",""))
+test <- read.csv(filetest, header=TRUE,na.strings=c("NA",""))
+```
+
+## Inspecting the data
+The training and test datasets have 159 common variables, and one additional variable which is different in the two datasets. The training data contains the dependent factor variable "classe" with 5 categories A-E which categorises the manner in which the weight was lifted. This variable is not present in the test data. Instead there is an independent variable  "problem_id" which identifies the number of the test observation.
+
+```{r inspect1, echo=TRUE}
+# glimpse(as.tibble(train))
+```
+
+# Cleaning the data
+The activity related features are converted to numeric variables and extracted to use for the prediction.
+
+```{r featureselection, echo=TRUE}
+train[,7:159] <- sapply(train[,7:159],as.numeric) 
+test[,7:159] <- sapply(test[,7:159], as.numeric) 
+
+# select the activity features only
+train <- train[8:160]
+test <- test[8:160]
+```
+
+Inspection of the data showed that it includes many NA values. Removal of observations with one or more NAs resulted in too many observations being discarded. A more effective method was to only remove the columns with one or more NAs.
+```{r removeNAs, echo=TRUE}
+# Find NA free columns
+cat("Removing NAs...\n")
+common_cols <- intersect(colnames(train), colnames(test))
+both <- rbind(train[, common_cols], test[, common_cols])
+both_noNA <- both[, colSums(is.na(both)) == 0] 
+noNA_cols <- colnames(both_noNA)
+
+# Reform train and test datasets without NA cols
+train_noNA <- cbind(classe=train$classe, both_noNA[1:19622,noNA_cols])
+test_noNA <- cbind(problem_id=test$problem_id, both_noNA[19623:19642, noNA_cols])
+rm(both, both_noNA, common_cols, noNA_cols, filetrain, filetest)
+```
+The fraction of NA values before cleaning was `r sum(is.na(train))/(nrow(train)*ncol(train))` in the training set and `r sum(is.na(test))/(nrow(test)*ncol(test))` in the testing set.
+
+The fraction of NA values after cleaning was
+`r sum(is.na(train_noNA))/(nrow(train_noNA)*ncol(train_noNA))` in the training set and `r sum(is.na(test_noNA))/(nrow(test_noNA)*ncol(test_noNA))` in the testing set.
+
+The same columns were removed from both the training and the test sets, leaving `r ncol(train_noNA)` activity features for model building.
+
+
+## Preparing for cross validation
+A validation set was creating using 30% of the training set.
+<!-- K fold validation was tried but was found to be very slow for this size dataset. Instead, a subset of the training data was excluded to use as a validation set.  -->
+```{r makevalidationset, echo=TRUE}
+# Create a validation set using 30% of the NA-cleaned training set
+cat("Creating a validation set...\n")
+set.seed(123)
+inTrain <- createDataPartition(train_noNA$classe, p=0.70)[[1]]
+train_noNA <- train_noNA[inTrain,]
+validation_noNA <- train_noNA[-inTrain,]
+```
+
+## Free up memory
+To clear disk space, the variables which are no longer needed are removed.
+```{r memoryclean, echo=TRUE}
+cat("Memory clean up...\n")
+rm(train, test)
+```
+
+
+# Modelling
+As the problem was a classification problem, a random forests model was used. The model was built using all other predictors except the classe. K-fold validation using 3 folds was used with the random forest method in the caret package.
+
+Time model building started: `r format(Sys.time(), "%a %d %b %X")`
+```{r buildmodel, echo=TRUE}
+cat("Building a model...\n")
+set.seed(32343)
+# model_rf <- train(classe ~., data=train_noNA, method="rf") # w/o k-folds
+model_rf <- train(classe ~ ., method = "rf", data = train_noNA, importance = TRUE, trControl = trainControl(method = "cv", number = 3)) # with 3 k-folds
+
+model_rf$finalModel # to print model coefficients
+```
+
+Time model building finished: `r format(Sys.time(), "%a %d %b %X")`
+
+
+```{r modelacc, echo=TRUE}
+# Plots of final model
+plot(model_rf)
+plot(model_rf$finalModel)
+plot(varImp(model_rf), top = 10)
+vi <- varImp(model_rf)
+vi$importance[1:10,]
+```
+
+The cross validation graph shows that the model with 27 predictors has the highest accuracy and is selected as the best fit. The accuracy of the best fit random forest model is 99%. A list of top ten important predictor variables in the model is also given for each class of activity.
+
+The final model plot shows that the overall error converged to near zero at around 100 trees. The algorithm could be speeded up by tuning to limit the number of trees. 
+The out of sample error is 0.68% calculated using the out of bag method. 
+
+
+## Validation
+The model was validated using the validation data set.
+```{r validate, echo=TRUE}
+# Test on validation set
+cat("Predicting on the validation set...\n")
+prf <- predict(model_rf, newdata=validation_noNA)
+
+# Compare predictions to actual measurement in the testing dataset
+confusionMatrix(prf, validation_noNA$classe)
+
+# Calculate accuracy on validation set
+tabrf <- table(prf, validation_noNA$classe)
+print(tabrf)
+
+fitequal = (prf==validation_noNA$classe)
+p <- qplot(prf, validation_noNA$classe, colour=fitequal,
+                 main="Comparison of the prediction to actual on validation set")
+plot(p)
+
+```
+
+Testing of the best fit model on the validation set found an even higher accuracy, with all observations being correctly predicted.
+
+
+# Prediction of the class on the test data set
+The class was predicted by applying the best fit random forest model to the test set. The following classes were predicted for each test observation:
+```{r predict, echo=TRUE}
+# Predict on test set
+test_noNA$classe <- as.character(predict(model_rf, newdata=test_noNA))
+cat("Prediction on test set:\n")
+print(test_noNA$classe)
+for (i in 1:20) cat(i, ": ", test_noNA$classe[i], "\n")
+```
+
