@@ -31,5 +31,5 @@ Downloaded data files:
 
 
 ### Dependencies
-```predictLiftingQuality.Rmd``` depends on ```dplyr``` and ```gpplot2```. If not installed, it will download and install the these packages.
+```predictLiftingQuality.Rmd``` depends on ```caret```, ```gpplot2``` and ```tibble```. 
 
